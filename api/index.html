@@ -825,7 +825,7 @@
             <!-- Enhancement Options -->
             <div style="margin-top: 20px; padding: 16px; background: var(--emerald-50); border: 1px solid var(--emerald-100); border-radius: var(--radius-md); display: flex; align-items: center; justify-content: space-between;">
               <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 600; font-size: 0.92rem; color: var(--emerald-600);">
-                <input type="checkbox" id="chkEnhanceVeins" checked style="width: 18px; height: 18px; accent-color: var(--emerald-600);" />
+                <input type="checkbox" id="chkEnhanceVeins" checked autocomplete="off" style="width: 18px; height: 18px; accent-color: var(--emerald-600);" />
                 🩸 Enhance Veins & Vascular Contrast (CLAHE Filter)
               </label>
               <div style="font-size: 0.82rem; color: var(--text-muted);">Engine: Lesion Analytics & Groq AI</div>
@@ -1166,6 +1166,11 @@
 
     initSlider('heroSlider', 'heroSliderOverlay', 'heroHandle');
     initSlider('wsSliderBox', 'wsSliderOverlay', 'wsHandle');
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const chk = document.getElementById('chkEnhanceVeins');
+      if (chk) chk.checked = true;
+    });
 
     function openWorkspace() {
       document.getElementById('workspaceWrapper').classList.add('active');
