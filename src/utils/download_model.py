@@ -33,11 +33,11 @@ def ensure_checkpoint_exists(target_path: str = "checkpoints/best_inference.pt")
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
     download_url = os.environ.get("MODEL_URL", DEFAULT_MODEL_URL)
 
-    print(f"Downloading model weights from {download_url} to {onnx_path}...")
+    print(f"Downloading model weights from {download_url} to {pt_path}...")
     try:
-        urllib.request.urlretrieve(download_url, onnx_path)
-        print(f"Successfully downloaded model weights to {onnx_path}")
-        return onnx_path
+        urllib.request.urlretrieve(download_url, pt_path)
+        print(f"Successfully downloaded model weights to {pt_path}")
+        return pt_path
     except Exception as e:
-        print(f"Failed to download ONNX weights from {download_url}: {e}")
+        print(f"Failed to download model weights from {download_url}: {e}")
         return target_path
