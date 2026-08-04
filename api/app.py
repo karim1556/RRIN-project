@@ -61,7 +61,9 @@ async def startup_event():
     """Ensure model checkpoint is present or downloaded on boot."""
     try:
         from src.utils.download_model import ensure_checkpoint_exists
-        ensure_checkpoint_exists("checkpoints/best_inference.pt")
+        ckpt_path = ensure_checkpoint_exists("checkpoints/best_inference.pt")
+        print(f"✅ RetinaAI Startup: Model checkpoint ready at {ckpt_path}")
+        print(f"📦 Source Provider: Hugging Face Hub CDN (Karim9111556/retinaai-weights)")
     except Exception as e:
         print(f"Startup model check notice: {e}")
 
