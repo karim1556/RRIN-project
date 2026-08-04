@@ -122,7 +122,7 @@ async def serve_ui():
     return HTMLResponse(content="<h1>RRIN Web UI HTML file not found</h1>", status_code=404)
 
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
+@app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """
     Quick sanity check — confirms the API is running and shows
