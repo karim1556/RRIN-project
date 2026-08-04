@@ -56,7 +56,9 @@ def load_generator_for_inference(
         target_onnx = checkpoint_path if checkpoint_path.endswith(".onnx") else onnx_path
         try:
             import onnxruntime as ort
-            session = ort.InferenceSession(target_onnx, providers=["CPUExecutionProvider"])
+            opts = ort.SessionOptions()
+            opts.log_severity_level = 3  # Suppress harmless CPU fallback warnings
+            session = ort.InferenceSession(target_onnx, opts, providers=["CPUExecutionProvider"])
             print(f"✅ ONNX model loaded successfully from {target_onnx} (ultra-lightweight engine)")
             return session
         except Exception as onnx_err:
