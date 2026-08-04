@@ -20,8 +20,12 @@ import torch.nn as nn
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-import anomalib
-from anomalib.models import Padim, Patchcore
+try:
+    import anomalib
+    from anomalib.models import Padim, Patchcore
+    HAS_ANOMALIB = True
+except Exception:
+    HAS_ANOMALIB = False
 
 
 # ---- Intel Anomalib Deep Anomaly Engine ----------------------
@@ -33,10 +37,15 @@ class AnomalibEngine:
     """
     def __init__(self, device: str = "cpu"):
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        try:
-            self.model = Padim(input_size=(256, 256), backbone="resnet18", layers=["layer1", "layer2", "layer3"]).to(self.device).eval()
-        except Exception:
-            self.model = Patchcore(input_size=(256, 256), backbone="resnet18", layers=["layer2", "layer3"]).to(self.device).eval()
+        self.model = None
+        if HAS_ANOMALIB:
+            try:
+                self.model = Padim(input_size=(256, 256), backbone="resnet18", layers=["layer1", "layer2", "layer3"]).to(self.device).eval()
+            except Exception:
+                try:
+                    self.model = Patchcore(input_size=(256, 256), backbone="resnet18", layers=["layer2", "layer3"]).to(self.device).eval()
+                except Exception:
+                    self.model = None
 
     def compute_anomaly_map(self, image_rgb: np.ndarray) -> tuple[np.ndarray, float]:
         """
@@ -46,8 +55,9 @@ class AnomalibEngine:
             img_t = torch.from_numpy(image_rgb).permute(2, 0, 1).unsqueeze(0).float().to(self.device)
             img_t_resized = nn.functional.interpolate(img_t, size=(256, 256), mode='bilinear', align_corners=False)
             
-            # Forward pass through anomalib model
             try:
+                if self.model is None:
+                    raise ValueError("Anomalib model not loaded")
                 out = self.model(img_t_resized)
                 if isinstance(out, dict) and "anomaly_map" in out:
                     amap = out["anomaly_map"].squeeze().cpu().numpy()
