@@ -62,7 +62,7 @@ async def startup_event():
     """Ensure model checkpoint is present or downloaded on boot."""
     try:
         from src.utils.download_model import ensure_checkpoint_exists
-        ensure_checkpoint_exists("checkpoints/best.pt")
+        ensure_checkpoint_exists("checkpoints/best_inference.onnx")
     except Exception as e:
         print(f"Startup model check notice: {e}")
 
