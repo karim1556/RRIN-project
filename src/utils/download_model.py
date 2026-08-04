@@ -12,7 +12,7 @@ from pathlib import Path
 # Default release URL for ultra-lightweight ONNX model (<100MB RAM)
 DEFAULT_MODEL_URL = os.environ.get(
     "MODEL_URL",
-    "https://github.com/karim1556/RRIN-project/releases/download/v1.0.0/best_inference.onnx"
+    "https://huggingface.co/Karim9111556/retinaai-weights/resolve/main/best_inference.onnx"
 )
 
 def ensure_checkpoint_exists(target_path: str = "checkpoints/best_inference.onnx") -> str:
