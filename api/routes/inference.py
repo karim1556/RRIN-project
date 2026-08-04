@@ -36,7 +36,7 @@ _cached_generator = None
 _cached_checkpoint_path = None
 
 
-def _get_generator(checkpoint_path: str = "checkpoints/best.pt"):
+def _get_generator(checkpoint_path: str = "checkpoints/best_inference.pt"):
     """Load the generator once and cache it for subsequent requests."""
     global _cached_generator, _cached_checkpoint_path
 
