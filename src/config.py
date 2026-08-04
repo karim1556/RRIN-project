@@ -10,7 +10,6 @@ HOW IT WORKS (for beginners):
 """
 
 import os
-import torch
 import yaml
 from pathlib import Path
 
@@ -89,5 +88,5 @@ VAL_FRACTION: float = float(_C.get("val_fraction", 0.10))
 QUALITY_QUANTILE_THRESHOLD: float = float(_C.get("quality_quantile_threshold", 0.65))
 
 # ---- Device (GPU if available, otherwise CPU) --------------
-DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE: str = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") else "cpu"
 

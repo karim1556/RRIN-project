@@ -17,7 +17,6 @@ HOW TO START THE API (for beginners):
 
 import os
 import time
-import torch
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -129,9 +128,11 @@ async def health_check():
     whether the key dependencies (GPU, checkpoint, database) are available.
     """
     from src.config import CHECKPOINT_DIR, METADATA_DB_PATH
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if torch.cuda.is_available():
-        device = f"cuda ({torch.cuda.get_device_name(0)})"
+    try:
+        import torch
+        device = f"cuda ({torch.cuda.get_device_name(0)})" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        device = "cpu"
 
     return HealthResponse(
         status="ok",

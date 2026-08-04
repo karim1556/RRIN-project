@@ -26,15 +26,7 @@ from api.schemas import (
     SplitRequest, SplitResponse,
 )
 from src.config import METADATA_DB_PATH
-from src.database import (
-    initialize_metadata_database,
-    ingest_source_dataset_into_database,
-    load_metadata_as_dataframe,
-    write_split_assignments_to_database,
-    build_image_id_to_split_mapping,
-)
-from src.quality_scoring import compute_and_attach_all_quality_scores, select_pseudo_clean_pool
-from src.splits import assign_patient_grouped_splits, verify_no_patient_overlap_across_splits
+# Lazy imports used inside handler functions to save memory
 
 router = APIRouter(prefix="/data", tags=["Data Pipeline"])
 
