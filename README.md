@@ -1,3 +1,14 @@
+---
+title: RetinaAI — Retinal Intelligence Platform
+emoji: 👁️
+colorFrom: green
+colorTo: teal
+sdk: gradio
+sdk_version: 4.44.0
+app_file: app.py
+pinned: false
+---
+
 # RRIN Project — File-by-File Edit Guide
 
 This document lists **every single file** in this project folder and tells
