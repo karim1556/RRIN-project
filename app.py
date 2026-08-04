@@ -1,30 +1,36 @@
 """
 app.py — Entry point for Hugging Face Spaces (Gradio SDK)
-Mounts the RetinaAI FastAPI application and Web UI cleanly on Hugging Face.
+Runs the FastAPI backend in a background thread on port 7861,
+then serves the full Web UI inside a Gradio iframe on port 7860.
 """
 
-import os
+import threading
+import uvicorn
 import gradio as gr
 from api.app import app as fastapi_app
 
-# Add route for iframe UI rendering inside HF Space
-@fastapi_app.get("/ui-embed", include_in_schema=False)
-async def serve_embedded_ui():
-    from fastapi.responses import HTMLResponse
-    ui_path = os.path.join(os.path.dirname(__file__), "api", "index.html")
-    if os.path.exists(ui_path):
-        with open(ui_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    return HTMLResponse(content="<h1>UI file not found</h1>", status_code=404)
+BACKEND_PORT = 7861
 
-# Create Gradio Blocks container exported as `demo`
-with gr.Blocks(title="RetinaAI — Retinal Intelligence Platform", css=".gradio-container { padding: 0 !important; max-width: 100% !important; } footer { visibility: hidden; }") as demo:
-    gr.HTML('<iframe src="/ui-embed" style="width:100%; height:95vh; border:none; margin:0; padding:0;"></iframe>')
+def _run_backend():
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=BACKEND_PORT, log_level="info")
 
-# Mount Gradio app over FastAPI app
-app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+# Start the FastAPI backend in a background daemon thread
+t = threading.Thread(target=_run_backend, daemon=True)
+t.start()
 
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+# Full-page iframe serving the RetinaAI Web UI via the backend
+html_content = f"""
+<iframe 
+  src="http://localhost:{BACKEND_PORT}/" 
+  style="width:100%; height:95vh; border:none; margin:0; padding:0;"
+  allow="camera; microphone">
+</iframe>
+"""
+
+with gr.Blocks(title="RetinaAI — Retinal Intelligence Platform", css="body,html,.gradio-container{margin:0;padding:0;max-width:100%!important;} footer{display:none!important;}") as demo:
+    gr.HTML(html_content)
+
+demo.launch(server_name="0.0.0.0", server_port=7860, show_api=False, share=False)
+
 
 
