@@ -337,40 +337,25 @@ async def full_pipeline(
             except (ValueError, TypeError):
                 clean_patient_age = None
 
-        # ----- Pillar 1: Restoration with best.pt -----
+        # ----- Pillar 1: Restoration with best.pt / best_inference.pt -----
         restored_image = image.copy()
         restoration_time = 0
+        generator = None
 
-        # Resolve checkpoint path robustly
-        resolved_ckpt = checkpoint_path
-        if not os.path.exists(resolved_ckpt):
-            candidate = os.path.join(os.path.dirname(__file__), "..", "..", checkpoint_path)
-            if os.path.exists(candidate):
-                resolved_ckpt = candidate
-            else:
-                abs_ckpt = "/Users/karimshaikh/Desktop/RRIN/RRIN-project/checkpoints/best.pt"
-                if os.path.exists(abs_ckpt):
-                    resolved_ckpt = abs_ckpt
+        try:
+            from api.routes.inference import _get_generator, _apply_clahe
+            generator = _get_generator(checkpoint_path)
+            from src.inference.restore import restore_image_array
+            t0 = time.time()
+            restored_image = restore_image_array(generator, image)
+            restoration_time = (time.time() - t0) * 1000
 
-        if os.path.exists(resolved_ckpt):
-            try:
-                from api.routes.inference import _get_generator, _apply_clahe
-                generator = _get_generator(resolved_ckpt)
-                from src.inference.restore import restore_image_array
-                t0 = time.time()
-                restored_image = restore_image_array(generator, image)
-                restoration_time = (time.time() - t0) * 1000
+            # Apply vein & vessel contrast enhancement (CLAHE)
+            if enhance_veins:
+                restored_image = _apply_clahe(restored_image)
 
-                # Apply vein & vessel contrast enhancement (CLAHE)
-                if enhance_veins:
-                    restored_image = _apply_clahe(restored_image)
-
-            except Exception as model_err:
-                print(f"⚠️ Model restoration error with {resolved_ckpt}: {model_err}")
-                from api.routes.inference import _apply_clahe
-                if enhance_veins:
-                    restored_image = _apply_clahe(image)
-        else:
+        except Exception as model_err:
+            print(f"⚠️ Model restoration notice: {model_err}")
             from api.routes.inference import _apply_clahe
             if enhance_veins:
                 restored_image = _apply_clahe(image)
@@ -409,7 +394,7 @@ async def full_pipeline(
 
         # ----- Pillar 6: Grad-CAM -----
         gradcam_data = {"heatmap": None, "insight_text": "Model checkpoint not available for Grad-CAM analysis."}
-        if os.path.exists(checkpoint_path):
+        if generator is not None:
             try:
                 from src.utils.image_utils import build_four_channel_input_tensor
                 from src.inference.restore import _pad_to_multiple
@@ -426,7 +411,8 @@ async def full_pipeline(
                     "heatmap": _array_to_base64(overlay),
                     "insight_text": insight,
                 }
-            except Exception:
+            except Exception as gc_err:
+                print(f"Grad-CAM notice: {gc_err}")
                 pass
 
         # ----- Pillar 8: Clinical Report -----

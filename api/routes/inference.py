@@ -40,6 +40,20 @@ def _get_generator(checkpoint_path: str = "checkpoints/best.pt"):
     """Load the generator once and cache it for subsequent requests."""
     global _cached_generator, _cached_checkpoint_path
 
+    # Fallback to best_inference.pt if checkpoint_path is missing
+    if not os.path.exists(checkpoint_path):
+        alt = os.path.join(os.path.dirname(checkpoint_path) or "checkpoints", "best_inference.pt")
+        if os.path.exists(alt):
+            checkpoint_path = alt
+
+    # If still missing, try auto-downloader
+    if not os.path.exists(checkpoint_path):
+        try:
+            from src.utils.download_model import ensure_checkpoint_exists
+            checkpoint_path = ensure_checkpoint_exists(checkpoint_path)
+        except Exception:
+            pass
+
     if _cached_generator is None or _cached_checkpoint_path != checkpoint_path:
         if not os.path.exists(checkpoint_path):
             raise HTTPException(
@@ -52,6 +66,7 @@ def _get_generator(checkpoint_path: str = "checkpoints/best.pt"):
         _cached_checkpoint_path = checkpoint_path
 
     return _cached_generator
+
 
 
 def _array_to_base64_png(arr) -> str:
