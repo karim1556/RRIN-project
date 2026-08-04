@@ -66,7 +66,7 @@ def install_project_dependencies() -> None:
     print("Installing project dependencies (torch protected)...")
     for pkg in ["lpips>=0.1.4", "albumentations>=1.3.0", "qudida"]:
         _pip(["--no-deps", pkg])
-    for pkg in ["noise==1.2.2", "fastapi>=0.104.0", "uvicorn[standard]>=0.24.0",
+    for pkg in ["fastapi>=0.104.0", "uvicorn[standard]>=0.24.0",
                 "python-multipart>=0.0.6", "opencv-python-headless",
                 "scikit-image", "scipy", "PyYAML", "pandas", "tqdm",
                 "Pillow", "kaggle"]:

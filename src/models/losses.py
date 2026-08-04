@@ -25,10 +25,76 @@ import torch.nn.functional as F
 import torchvision.models as tvm
 
 from src.config import (
-    LAMBDA_ADV, LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM,
+    LAMBDA_ADV, LAMBDA_CHARBONNIER, LAMBDA_EDGE, LAMBDA_L1, LAMBDA_PERCEPTUAL, LAMBDA_SSIM,
     LABEL_SMOOTHING_REAL_TARGET, VGG_PERCEPTUAL_LAYERS,
 )
 from src.utils.image_utils import rescale_to_imagenet_normalization
+
+
+# ---- Charbonnier Loss --------------------------------------
+
+class CharbonnierLoss(nn.Module):
+    """
+    Charbonnier Loss: a smooth L1 variant (sqrt((x - y)^2 + eps^2)).
+    Provides robust gradients near zero without the sharp discontinuity of L1.
+    """
+    def __init__(self, eps: float = 1e-3) -> None:
+        super().__init__()
+        self.eps_sq = eps * eps
+
+    def forward(
+        self,
+        candidate_output: torch.Tensor,
+        target_output: torch.Tensor,
+        mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        diff_sq = (candidate_output - target_output) ** 2
+        loss = torch.sqrt(diff_sq + self.eps_sq)
+        if mask is not None:
+            loss = loss * mask
+            return loss.sum() / (mask.sum() * candidate_output.shape[1] + 1e-8)
+        return loss.mean()
+
+
+# ---- Sobel Edge Loss ---------------------------------------
+
+class SobelEdgeLoss(nn.Module):
+    """
+    Sobel Edge Loss: computes difference in spatial gradients (edges).
+    Extremely effective for preserving fine blood vessels and optic disc boundaries.
+    """
+    def __init__(self) -> None:
+        super().__init__()
+        sobel_x = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]], dtype=torch.float32).view(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]], dtype=torch.float32).view(1, 1, 3, 3)
+        self.register_buffer("sobel_x", sobel_x)
+        self.register_buffer("sobel_y", sobel_y)
+
+    def forward(
+        self,
+        candidate_output: torch.Tensor,
+        target_output: torch.Tensor,
+        mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        b, c, h, w = candidate_output.shape
+        x_g = candidate_output.view(b * c, 1, h, w)
+        y_g = target_output.view(b * c, 1, h, w)
+
+        gx_x = F.conv2d(x_g, self.sobel_x, padding=1)
+        gy_x = F.conv2d(x_g, self.sobel_y, padding=1)
+        grad_x = (torch.abs(gx_x) + torch.abs(gy_x)).view(b, c, h, w)
+
+        gx_y = F.conv2d(y_g, self.sobel_x, padding=1)
+        gy_y = F.conv2d(y_g, self.sobel_y, padding=1)
+        grad_y = (torch.abs(gx_y) + torch.abs(gy_y)).view(b, c, h, w)
+
+        diff = torch.abs(grad_x - grad_y)
+        if mask is not None:
+            diff = diff * mask
+            return diff.sum() / (mask.sum() * c + 1e-8)
+        return diff.mean()
+
+
 
 
 # ---- VGG Perceptual Loss -----------------------------------
@@ -310,9 +376,13 @@ def compute_discriminator_loss(
     real_logits = discriminator(degraded_input, real_target)
     fake_logits = discriminator(degraded_input, fake_output_detached)
 
-    real_label  = torch.full_like(real_logits, LABEL_SMOOTHING_REAL_TARGET)
-    real_loss   = F.mse_loss(real_logits, real_label)
-    fake_loss   = F.mse_loss(fake_logits, torch.zeros_like(fake_logits))
+    # Cast to float32 for stable MSE loss calculation under mixed precision
+    real_logits_f32 = real_logits.float()
+    fake_logits_f32 = fake_logits.float()
+
+    real_label  = torch.full_like(real_logits_f32, LABEL_SMOOTHING_REAL_TARGET)
+    real_loss   = F.mse_loss(real_logits_f32, real_label)
+    fake_loss   = F.mse_loss(fake_logits_f32, torch.zeros_like(fake_logits_f32))
 
     return 0.5 * (real_loss + fake_loss)
 
@@ -327,61 +397,66 @@ def compute_generator_loss(
     fake_output: torch.Tensor,
     real_target: torch.Tensor,
     fov_mask: torch.Tensor,
+    charbonnier_loss_module: CharbonnierLoss = None,
+    edge_loss_module: SobelEdgeLoss = None,
 ) -> tuple[torch.Tensor, dict]:
     """
-    Compute the combined generator loss (Section 8.6 of the project plan):
+    Compute the combined generator loss:
 
-        L_G = λ_adv * L_adv  +  λ_L1 * L_L1  +  λ_ssim * L_SSIM  +  λ_perc * L_perc
+        L_G = λ_adv * L_adv + λ_charb * L_charb + λ_edge * L_edge + λ_L1 * L_L1 + λ_ssim * L_SSIM + λ_perc * L_perc
 
-    The L1 term is computed only over FOV (fundus disc) pixels by masking.
-    Pixels outside the circular disc are black background — penalising
-    errors there would confuse the network.
-
-    NOTE: fake_output must NOT be detached here. Gradients must flow
-    all the way from the discriminator's judgment back through the
-    generator's parameters to train it.
-
-    params:
-        discriminator        — PatchGANDiscriminator
-        perceptual_loss_module — VGGPerceptualLoss
-        ssim_loss_module     — SSIMLoss
-        degraded_input       — (B, 4, H, W)
-        fake_output          — (B, 3, H, W)  NOT detached
-        real_target          — (B, 3, H, W)
-        fov_mask             — (B, 1, H, W) float tensor of 0/1 values
-    returns:
-        total_loss  — scalar tensor (for .backward())
-        loss_dict   — {name: float} for logging
-    side effects: builds computation graph (gradients computed on .backward())
+    The distance terms are computed inside the FOV (fundus disc) using masking.
     """
     # Adversarial: fool the discriminator into scoring fake as "real" (target=1)
     fake_logits      = discriminator(degraded_input, fake_output)
-    adversarial_loss = F.mse_loss(fake_logits, torch.ones_like(fake_logits))
+    fake_logits_f32  = fake_logits.float()
+    adversarial_loss = F.mse_loss(fake_logits_f32, torch.ones_like(fake_logits_f32))
+
+    # Cast generator outputs and targets to float32 for stable distance losses
+    fake_output_f32 = fake_output.float()
+    real_target_f32 = real_target.float()
+    fov_mask_f32    = fov_mask.float()
+
+    # Charbonnier Loss (smooth L1 inside FOV)
+    if charbonnier_loss_module is None:
+        charbonnier_loss_module = CharbonnierLoss().to(degraded_input.device)
+    charbonnier_val = charbonnier_loss_module(fake_output_f32, real_target_f32, mask=fov_mask_f32)
+
+    # Sobel Edge Loss (high-frequency vessel preservation inside FOV)
+    if edge_loss_module is None:
+        edge_loss_module = SobelEdgeLoss().to(degraded_input.device)
+    edge_val = edge_loss_module(fake_output_f32, real_target_f32, mask=fov_mask_f32)
 
     # Masked L1: measure pixel accuracy only inside the fundus disc
     masked_l1_loss   = F.l1_loss(
-        fake_output * fov_mask,
-        real_target * fov_mask
+        fake_output_f32 * fov_mask_f32,
+        real_target_f32 * fov_mask_f32
     )
 
-    # SSIM structural similarity
-    ssim_loss_value  = ssim_loss_module(fake_output, real_target)
+    # SSIM structural similarity (needs float32 for local variance stability)
+    ssim_loss_value  = ssim_loss_module(fake_output_f32, real_target_f32)
 
-    # VGG perceptual (deep feature matching)
-    perceptual_value = perceptual_loss_module(fake_output, real_target)
+    # VGG perceptual (needs float32 for deep layer stability)
+    perceptual_value = perceptual_loss_module(fake_output_f32, real_target_f32)
 
     total = (
-        LAMBDA_ADV        * adversarial_loss
-        + LAMBDA_L1       * masked_l1_loss
-        + LAMBDA_SSIM     * ssim_loss_value
-        + LAMBDA_PERCEPTUAL * perceptual_value
+        LAMBDA_ADV           * adversarial_loss
+        + LAMBDA_CHARBONNIER * charbonnier_val
+        + LAMBDA_EDGE        * edge_val
+        + LAMBDA_L1          * masked_l1_loss
+        + LAMBDA_SSIM        * ssim_loss_value
+        + LAMBDA_PERCEPTUAL  * perceptual_value
     )
 
     loss_dict = {
-        "adversarial": float(adversarial_loss),
-        "l1":          float(masked_l1_loss),
-        "ssim":        float(ssim_loss_value),
-        "perceptual":  float(perceptual_value),
-        "total":       float(total),
+        "adversarial": float(adversarial_loss.detach().item()),
+        "charbonnier": float(charbonnier_val.detach().item()),
+        "edge":        float(edge_val.detach().item()),
+        "l1":          float(masked_l1_loss.detach().item()),
+        "ssim":        float(ssim_loss_value.detach().item()),
+        "perceptual":  float(perceptual_value.detach().item()),
+        "total":       float(total.detach().item()),
     }
+
     return total, loss_dict
+

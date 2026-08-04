@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Checkpoints (large binary models hosted on GitHub Releases/HuggingFace)
+checkpoints/*.pt
+checkpoints/*.pth
+checkpoints/*.onnx
+!checkpoints/.gitkeep
+
+# macOS system files
+.DS_Store
+**/.DS_Store
+
+# Local test outputs and scratch images
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+scratch/
+test_output/
+logs/
+
+# Database files
+*.sqlite
+*.sqlite3
+
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/

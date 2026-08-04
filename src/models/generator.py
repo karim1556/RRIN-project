@@ -97,18 +97,35 @@ class ConvInstanceNormActivation(nn.Module):
         return self.activation(self.norm(self.conv(x)))
 
 
+class ChannelAttention(nn.Module):
+    """
+    Channel Attention (Squeeze-and-Excitation): dynamically reweights feature channels
+    to emphasize blood vessels and suppress background noise artifacts.
+    """
+    def __init__(self, channels: int, reduction: int = 16) -> None:
+        super().__init__()
+        reduced = max(channels // reduction, 8)
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, reduced, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(reduced, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y.expand_as(x)
+
+
 # ---- Residual block ----------------------------------------
 
 class ResidualBlock(nn.Module):
     """
-    Residual block: y = x + F(x)
-    Two 3×3 conv-norm-relu layers with an identity shortcut.
-
-    The identity shortcut allows gradients to flow directly backwards
-    through deep networks without vanishing, and lets the block
-    learn to add small corrections rather than full transformations.
-
-    Used in the bottleneck (the deepest, most abstract part of the network).
+    Residual block with Channel Attention: y = x + CA(F(x))
+    Two 3×3 conv-norm-relu layers with an identity shortcut and channel re-weighting.
     """
 
     def __init__(self, channels: int, dropout_probability: float = 0.0) -> None:
@@ -120,12 +137,13 @@ class ResidualBlock(nn.Module):
         self.conv_b   = ConvInstanceNormActivation(
             channels, channels, kernel_size=3, stride=1, padding=1, activation="none"
         )
+        self.ca       = ChannelAttention(channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # F(x) = conv_b(dropout(conv_a(x)))
-        # Output = x + F(x)   ← the residual shortcut
         residual = self.conv_b(self.dropout(self.conv_a(x)))
+        residual = self.ca(residual)
         return x + residual
+
 
 
 # ---- Attention gate ----------------------------------------

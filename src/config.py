@@ -52,6 +52,7 @@ NUM_WORKERS: int = _C.get("num_workers", 2)
 NUM_EPOCHS: int = _C.get("num_epochs", 200)
 LR_CONSTANT_EPOCHS: int = _C.get("lr_constant_epochs", 100)
 LR_DECAY_EPOCHS: int = _C.get("lr_decay_epochs", 100)
+SCHEDULER_TYPE: str = _C.get("scheduler_type", "linear")
 
 LEARNING_RATE: float = float(_C.get("learning_rate", 2e-4))
 ADAM_BETA1: float = float(_C.get("adam_beta1", 0.5))
@@ -60,18 +61,24 @@ ADAM_EPSILON: float = float(_C.get("adam_epsilon", 1e-8))
 WEIGHT_DECAY: float = float(_C.get("weight_decay", 1e-5))
 
 # ---- Loss weights ------------------------------------------
-LAMBDA_ADV: float = float(_C.get("lambda_adv", 1.0))
-LAMBDA_L1: float = float(_C.get("lambda_l1", 100.0))
+LAMBDA_ADV: float = float(_C.get("lambda_adv", 2.0))
+LAMBDA_CHARBONNIER: float = float(_C.get("lambda_charbonnier", 50.0))
+LAMBDA_EDGE: float = float(_C.get("lambda_edge", 20.0))
+LAMBDA_L1: float = float(_C.get("lambda_l1", 10.0))
 LAMBDA_SSIM: float = float(_C.get("lambda_ssim", 10.0))
-LAMBDA_PERCEPTUAL: float = float(_C.get("lambda_perceptual", 10.0))
+LAMBDA_PERCEPTUAL: float = float(_C.get("lambda_perceptual", 15.0))
 LAMBDA_CYCLE: float = float(_C.get("lambda_cycle", 10.0))
 
-# ---- Training stability ------------------------------------
+# ---- Training stability & Acceleration --------------------
+USE_AMP: bool = bool(_C.get("use_amp", False))
+USE_EMA: bool = bool(_C.get("use_ema", True))
+
+EMA_DECAY: float = float(_C.get("ema_decay", 0.999))
 LABEL_SMOOTHING_REAL_TARGET: float = float(_C.get("label_smoothing_real_target", 0.9))
-EARLY_STOPPING_PATIENCE: int = _C.get("early_stopping_patience", 15)
+EARLY_STOPPING_PATIENCE: int = _C.get("early_stopping_patience", 25)
 
 # ---- VGG perceptual loss layers ----------------------------
-VGG_PERCEPTUAL_LAYERS: list = _C.get("vgg_perceptual_layers", ["relu2_2", "relu3_3"])
+VGG_PERCEPTUAL_LAYERS: list = _C.get("vgg_perceptual_layers", ["relu1_2", "relu2_2", "relu3_3", "relu4_3"])
 
 # ---- Random seed -------------------------------------------
 RANDOM_SEED: int = _C.get("random_seed", 42)
@@ -79,7 +86,8 @@ RANDOM_SEED: int = _C.get("random_seed", 42)
 # ---- Data splits -------------------------------------------
 TRAIN_FRACTION: float = float(_C.get("train_fraction", 0.85))
 VAL_FRACTION: float = float(_C.get("val_fraction", 0.10))
-QUALITY_QUANTILE_THRESHOLD: float = float(_C.get("quality_quantile_threshold", 0.75))
+QUALITY_QUANTILE_THRESHOLD: float = float(_C.get("quality_quantile_threshold", 0.65))
 
 # ---- Device (GPU if available, otherwise CPU) --------------
 DEVICE: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+

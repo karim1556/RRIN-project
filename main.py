@@ -149,7 +149,7 @@ def main():
     from src.models.generator import UNetGenerator, initialize_network_weights
     from src.models.discriminator import PatchGANDiscriminator
     from src.models.losses import VGGPerceptualLoss, SSIMLoss
-    from src.training.checkpoints import save_checkpoint, load_checkpoint, EarlyStopping, get_linear_decay_lr_scheduler
+    from src.training.checkpoints import save_checkpoint, load_checkpoint, EarlyStopping, get_lr_scheduler
 
     generator     = UNetGenerator().to(DEVICE)
     discriminator = PatchGANDiscriminator().to(DEVICE)
@@ -167,10 +167,13 @@ def main():
         disc_opt = torch.optim.Adam(discriminator.parameters(), lr=args.lr, betas=(ADAM_BETA1, ADAM_BETA2), eps=ADAM_EPSILON)
         logger.info("Initialised new model with random weights.")
 
-    gen_sched  = get_linear_decay_lr_scheduler(gen_opt)
-    disc_sched = get_linear_decay_lr_scheduler(disc_opt)
+    gen_sched  = get_lr_scheduler(gen_opt)
+    disc_sched = get_lr_scheduler(disc_opt)
     perc_loss  = VGGPerceptualLoss().to(DEVICE)
     ssim_loss  = SSIMLoss().to(DEVICE)
+    charb_loss = CharbonnierLoss().to(DEVICE)
+    edge_loss  = SobelEdgeLoss().to(DEVICE)
+    ema_gen    = ExponentialMovingAverage(generator) if USE_EMA else None
     early_stop = EarlyStopping(metric_should_increase=True)
 
     # ---- EVAL-ONLY MODE ------------------------------------
@@ -194,7 +197,10 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         train_losses = train_one_epoch(
             generator, discriminator, gen_opt, disc_opt,
-            perc_loss, ssim_loss, train_dl, epoch, logger
+            perc_loss, ssim_loss, train_dl, epoch, logger,
+            charbonnier_loss_module=charb_loss,
+            edge_loss_module=edge_loss,
+            ema_generator=ema_gen,
         )
         val_metrics = validate_one_epoch(generator, val_dl, epoch, logger)
 
@@ -205,6 +211,7 @@ def main():
 
         should_stop, is_new_best = early_stop.step(val_metrics["ssim"])
         save_checkpoint(CHECKPOINT_DIR, epoch, generator, discriminator, gen_opt, disc_opt, val_metrics, is_new_best)
+
 
         if should_stop:
             logger.info(f"Early stopping at epoch {epoch} (no improvement for {early_stop.patience} epochs).")

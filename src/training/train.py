@@ -31,50 +31,67 @@ import torch
 import torch.nn as nn
 from tqdm import tqdm
 
-from src.config import DEVICE
+from src.config import DEVICE, USE_AMP, USE_EMA, EMA_DECAY
 from src.models.losses import (
     compute_discriminator_loss,
     compute_generator_loss,
     VGGPerceptualLoss,
     SSIMLoss,
+    CharbonnierLoss,
+    SobelEdgeLoss,
 )
 from src.utils.image_utils import derive_fov_mask_from_input_tensor, tensor_to_float_array
+
+# Mixed Precision Scalers with backward compatibility
+if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+    scaler_g = torch.amp.GradScaler("cuda", enabled=USE_AMP and DEVICE.type == "cuda")
+    scaler_d = torch.amp.GradScaler("cuda", enabled=USE_AMP and DEVICE.type == "cuda")
+else:
+    scaler_g = torch.cuda.amp.GradScaler(enabled=USE_AMP and DEVICE.type == "cuda")
+    scaler_d = torch.cuda.amp.GradScaler(enabled=USE_AMP and DEVICE.type == "cuda")
+
+
+def get_autocast_context(enabled: bool):
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=enabled)
+    return torch.cuda.amp.autocast(enabled=enabled)
+
+
+
+class ExponentialMovingAverage:
+    """
+    Exponential Moving Average of generator model weights.
+    Provides significantly smoother, higher-quality inference outputs.
+    """
+    def __init__(self, model: nn.Module, decay: float = EMA_DECAY):
+        self.decay = decay
+        self.shadow = {name: param.clone().detach() for name, param in model.named_parameters() if param.requires_grad}
+
+    def update(self, model: nn.Module):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad and name in self.shadow:
+                    self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
+
+    def copy_to(self, model: nn.Module):
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                param.data.copy_(self.shadow[name])
 
 
 # ---- PSNR / SSIM metric computation -----------------------
 
 def compute_psnr(output: torch.Tensor, target: torch.Tensor) -> float:
-    """
-    Compute Peak Signal-to-Noise Ratio between output and target.
-
-    PSNR = 10 * log10(MAX² / MSE)
-    Higher is better. Values above 30 dB are generally good.
-
-    Both tensors should be in [-1, 1]; we rescale to [0, 1] for computation.
-
-    params: output, target — (B, C, H, W) tensors in [-1, 1]
-    returns: average PSNR over the batch (float)
-    """
-    # Rescale to [0, 1]
     out_01    = (output + 1.0) / 2.0
     target_01 = (target + 1.0) / 2.0
 
     mse = torch.mean((out_01 - target_01) ** 2)
     if mse < 1e-10:
-        return 100.0    # Perfect match
+        return 100.0
     return float(10.0 * torch.log10(torch.tensor(1.0) / mse))
 
 
 def compute_ssim_simple(output: torch.Tensor, target: torch.Tensor) -> float:
-    """
-    Compute a simplified SSIM using global (not windowed) statistics.
-    Used during training for fast approximate validation.
-
-    The full windowed SSIM is used in the final evaluation (metrics.py).
-
-    params: output, target — (B, C, H, W) in [-1, 1]
-    returns: mean SSIM value over batch (float, 0..1)
-    """
     out_01    = (output + 1.0) / 2.0
     target_01 = (target + 1.0) / 2.0
 
@@ -84,7 +101,7 @@ def compute_ssim_simple(output: torch.Tensor, target: torch.Tensor) -> float:
     sigma_y = target_01.var()
     sigma_xy = ((out_01 - mu_x) * (target_01 - mu_y)).mean()
 
-    C1, C2 = 0.0001, 0.0009   # (k1·L)² and (k2·L)² with L=1
+    C1, C2 = 0.0001, 0.0009
 
     numerator   = (2 * mu_x * mu_y + C1) * (2 * sigma_xy + C2)
     denominator = (mu_x**2 + mu_y**2 + C1) * (sigma_x + sigma_y + C2)
@@ -95,15 +112,6 @@ def compute_psnr_ssim_batch(
     output_batch: torch.Tensor,
     target_batch: torch.Tensor,
 ) -> tuple[float, float]:
-    """
-    Compute average PSNR and SSIM for a batch of images.
-
-    params:
-        output_batch — (B, 3, H, W) generator outputs in [-1, 1]
-        target_batch — (B, 3, H, W) clean targets in [-1, 1]
-    returns: (mean_psnr, mean_ssim) floats
-    side effects: none
-    """
     psnr_values = []
     ssim_values = []
     B = output_batch.shape[0]
@@ -132,68 +140,65 @@ def train_one_epoch(
     train_dataloader: torch.utils.data.DataLoader,
     epoch_index: int,
     logger: logging.Logger,
+    charbonnier_loss_module: CharbonnierLoss = None,
+    edge_loss_module: SobelEdgeLoss = None,
+    ema_generator: ExponentialMovingAverage = None,
 ) -> dict[str, float]:
-    """
-    Run one full pass over the training dataloader, updating both
-    discriminator and generator on every mini-batch.
-
-    Training step order (from Section 9.3 of the project plan):
-      1. Forward: generate fake output from degraded input
-      2. Update D: compute D loss with DETACHED fake output; backprop; step D
-      3. Update G: compute composite G loss (not detached); backprop; step G
-      4. Log losses
-
-    params:
-        generator, discriminator       — the two networks
-        generator_optimizer            — Adam for generator
-        discriminator_optimizer        — Adam for discriminator
-        perceptual_loss_module         — frozen VGG16 loss module
-        ssim_loss_module               — SSIM loss module
-        train_dataloader               — yields (degraded_input, real_target) batches
-        epoch_index                    — current epoch (for logging)
-        logger                         — Python logger
-    returns: dict of average loss component values for this epoch
-    side effects: updates generator's and discriminator's weights in-place
-    """
     generator.train()
     discriminator.train()
     accumulated_losses: dict = collections.defaultdict(float)
     num_batches = 0
 
     progress_bar = tqdm(train_dataloader, desc=f"Epoch {epoch_index:03d} [train]", leave=False)
+    use_amp = USE_AMP and DEVICE.type == "cuda"
 
     for degraded_input, real_target in progress_bar:
-        # FIXED: entire training step wrapped so a transient CUDA OOM on one
-        # batch clears the cache and skips that batch instead of killing the
-        # whole (multi-hour) run. Non-OOM errors are re-raised normally.
         try:
-            degraded_input = degraded_input.to(DEVICE, non_blocking=True)  # (B, 4, H, W)
-            real_target    = real_target.to(DEVICE, non_blocking=True)     # (B, 3, H, W)
+            degraded_input = degraded_input.to(DEVICE, non_blocking=True)
+            real_target    = real_target.to(DEVICE, non_blocking=True)
 
-            # FOV mask — only compute loss on pixels inside the fundus disc
-            fov_mask = derive_fov_mask_from_input_tensor(degraded_input)  # (B, 1, H, W)
+            fov_mask = derive_fov_mask_from_input_tensor(degraded_input)
 
             # ---- Step 1: Generate fake output ----
-            fake_output = generator(degraded_input)     # (B, 3, H, W)
+            with get_autocast_context(use_amp):
+                fake_output = generator(degraded_input)
 
             # ---- Step 2: Update Discriminator ----
-            # DETACH fake_output so gradients don't flow into the generator here
             discriminator_optimizer.zero_grad(set_to_none=True)
-            disc_loss = compute_discriminator_loss(
-                discriminator, degraded_input, real_target, fake_output.detach()
-            )
-            disc_loss.backward()
-            discriminator_optimizer.step()
+            with get_autocast_context(use_amp):
+                disc_loss = compute_discriminator_loss(
+                    discriminator, degraded_input, real_target, fake_output.detach()
+                )
+
+            if use_amp:
+                scaler_d.scale(disc_loss).backward()
+                scaler_d.step(discriminator_optimizer)
+                scaler_d.update()
+            else:
+                disc_loss.backward()
+                discriminator_optimizer.step()
 
             # ---- Step 3: Update Generator ----
-            # NOT detached — gradients flow from discriminator's judgment into G
             generator_optimizer.zero_grad(set_to_none=True)
-            total_gen_loss, loss_dict = compute_generator_loss(
-                discriminator, perceptual_loss_module, ssim_loss_module,
-                degraded_input, fake_output, real_target, fov_mask
-            )
-            total_gen_loss.backward()
-            generator_optimizer.step()
+            with get_autocast_context(use_amp):
+                total_gen_loss, loss_dict = compute_generator_loss(
+                    discriminator, perceptual_loss_module, ssim_loss_module,
+                    degraded_input, fake_output, real_target, fov_mask,
+                    charbonnier_loss_module=charbonnier_loss_module,
+                    edge_loss_module=edge_loss_module,
+                )
+
+
+            if use_amp:
+                scaler_g.scale(total_gen_loss).backward()
+                scaler_g.step(generator_optimizer)
+                scaler_g.update()
+            else:
+                total_gen_loss.backward()
+                generator_optimizer.step()
+
+            if ema_generator is not None:
+                ema_generator.update(generator)
 
             # ---- Step 4: Accumulate for logging ----
             loss_dict["discriminator"] = float(disc_loss)
@@ -201,29 +206,22 @@ def train_one_epoch(
                 accumulated_losses[key] += val
             num_batches += 1
 
-            # Update progress bar with live loss values
             progress_bar.set_postfix(
                 total=f"{loss_dict['total']:.3f}",
-                l1=f"{loss_dict['l1']:.3f}",
+                charb=f"{loss_dict.get('charbonnier', 0.0):.3f}",
+                edge=f"{loss_dict.get('edge', 0.0):.3f}",
                 disc=f"{loss_dict['discriminator']:.3f}",
             )
 
         except RuntimeError as runtime_error:
-            # FIXED: graceful recovery from CUDA out-of-memory on a single batch.
             if "out of memory" in str(runtime_error).lower():
                 logger.warning(
-                    f"CUDA OOM on a batch in epoch {epoch_index} — "
-                    f"clearing cache and skipping this batch. "
-                    f"If this recurs, lower batch_size in config.yaml."
+                    f"CUDA OOM on batch in epoch {epoch_index} — skipping batch and freeing cache."
                 )
-                # Drop references and free the cached allocator memory
-                for _v in ("fake_output", "total_gen_loss", "disc_loss"):
-                    if _v in dict(locals()):
-                        del locals()[_v]
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 continue
-            raise   # any non-OOM RuntimeError is a real bug — re-raise it
+            raise
 
     avg_losses = {k: v / max(1, num_batches) for k, v in accumulated_losses.items()}
     logger.info(f"Epoch {epoch_index:03d} [train] " +
@@ -239,33 +237,27 @@ def validate_one_epoch(
     epoch_index: int,
     logger: logging.Logger,
 ) -> dict[str, float]:
-    """
-    Run the generator in evaluation mode over the full validation dataloader.
-    Compute PSNR and SSIM. No weight updates happen here.
-
-    params:
-        generator             — UNetGenerator in eval mode
-        validation_dataloader — yields (degraded_input, real_target) batches
-        epoch_index           — current epoch (for logging)
-        logger                — Python logger
-    returns: dict with keys "psnr" and "ssim"
-    side effects: none (no weight updates; torch.no_grad() context is used)
-    """
     generator.eval()
     accumulated_psnr = 0.0
     accumulated_ssim = 0.0
     num_batches = 0
 
     progress_bar = tqdm(validation_dataloader, desc=f"Epoch {epoch_index:03d} [val]", leave=False)
+    use_amp = USE_AMP and DEVICE.type == "cuda"
 
     with torch.no_grad():
         for degraded_input, real_target in progress_bar:
             degraded_input = degraded_input.to(DEVICE)
             real_target    = real_target.to(DEVICE)
 
-            restored_output = generator(degraded_input)
+            with get_autocast_context(use_amp):
+                restored_output = generator(degraded_input)
 
-            batch_psnr, batch_ssim = compute_psnr_ssim_batch(restored_output, real_target)
+
+            restored_output_f32 = restored_output.float()
+            real_target_f32     = real_target.float()
+
+            batch_psnr, batch_ssim = compute_psnr_ssim_batch(restored_output_f32, real_target_f32)
             accumulated_psnr += batch_psnr
             accumulated_ssim += batch_ssim
             num_batches += 1
@@ -281,3 +273,4 @@ def validate_one_epoch(
     }
     logger.info(f"Epoch {epoch_index:03d} [val] psnr={avg_metrics['psnr']:.2f} ssim={avg_metrics['ssim']:.4f}")
     return avg_metrics
+

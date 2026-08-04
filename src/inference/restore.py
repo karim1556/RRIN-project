@@ -42,26 +42,45 @@ def load_generator_for_inference(
     """
     Load the trained generator from a checkpoint for inference-only use.
 
-    Optimizer states are not loaded (not needed for inference).
-    Model is put into eval() mode (disables dropout/batch-norm randomness).
+    Supports both full training checkpoints (best.pt) and stripped
+    generator-only checkpoints (best_inference.pt). Optimizer states are not loaded.
+    Model is put into eval() mode.
 
     params: checkpoint_path — path to the .pt checkpoint file
     returns: UNetGenerator ready for inference
     side effects: loads weights into GPU/CPU memory
     """
+    # Fallback check if default checkpoint_path doesn't exist
+    if not os.path.exists(checkpoint_path):
+        alt_path = os.path.join(os.path.dirname(checkpoint_path), "best_inference.pt")
+        if os.path.exists(alt_path):
+            checkpoint_path = alt_path
+
+    if not os.path.exists(checkpoint_path):
+        # Attempt automatic model download if downloader helper is available
+        try:
+            from src.utils.download_model import ensure_checkpoint_exists
+            checkpoint_path = ensure_checkpoint_exists(checkpoint_path)
+        except Exception as e:
+            print(f"Warning: Model download failed: {e}")
+
     generator = UNetGenerator().to(DEVICE)
 
-    # We need a dummy discriminator to satisfy load_checkpoint's signature,
-    # but we immediately discard it after loading
-    from src.models.discriminator import PatchGANDiscriminator
-    dummy_disc = PatchGANDiscriminator().to(DEVICE)
+    payload = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
 
-    load_checkpoint(checkpoint_path, generator, dummy_disc)
-    del dummy_disc
+    if isinstance(payload, dict) and "generator_state" in payload:
+        generator.load_state_dict(payload["generator_state"])
+    elif isinstance(payload, dict) and "state_dict" in payload:
+        generator.load_state_dict(payload["state_dict"])
+    elif isinstance(payload, dict):
+        generator.load_state_dict(payload)
+    else:
+        raise ValueError(f"Invalid checkpoint format in {checkpoint_path}")
 
     generator.eval()
-    print(f"Generator loaded from {checkpoint_path} (running on {DEVICE})")
+    print(f"Generator loaded successfully from {checkpoint_path} (running on {DEVICE})")
     return generator
+
 
 
 # ---- Tiled inference for large images ----------------------

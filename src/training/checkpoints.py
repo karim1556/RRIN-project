@@ -29,7 +29,13 @@ from typing import Optional
 import torch
 import torch.optim
 
-from src.config import EARLY_STOPPING_PATIENCE, LR_CONSTANT_EPOCHS, LR_DECAY_EPOCHS
+from src.config import (
+    EARLY_STOPPING_PATIENCE,
+    LR_CONSTANT_EPOCHS,
+    LR_DECAY_EPOCHS,
+    NUM_EPOCHS,
+    SCHEDULER_TYPE,
+)
 
 
 # ---- Early Stopping ----------------------------------------
@@ -112,6 +118,32 @@ def get_linear_decay_lr_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
+def get_cosine_decay_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    total_epochs: int = NUM_EPOCHS,
+    eta_min: float = 1e-6,
+) -> torch.optim.lr_scheduler.CosineAnnealingLR:
+    """
+    Build a CosineAnnealingLR scheduler that decays the learning rate
+    to eta_min using a cosine curve over the total_epochs.
+    """
+    return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_epochs, eta_min=eta_min)
+
+
+def get_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    scheduler_type: str = SCHEDULER_TYPE,
+) -> torch.optim.lr_scheduler._LRScheduler:
+    """
+    Unified learning rate scheduler factory.
+    Dispatches based on scheduler_type config parameter.
+    """
+    if scheduler_type == "cosine":
+        return get_cosine_decay_lr_scheduler(optimizer)
+    else:
+        return get_linear_decay_lr_scheduler(optimizer)
+
+
 # ---- Checkpoint Save / Load --------------------------------
 
 def save_checkpoint(
@@ -155,9 +187,14 @@ def save_checkpoint(
         "validation_metrics":          validation_metrics,
     }
 
-    # Save epoch-specific checkpoint
-    epoch_path = os.path.join(checkpoint_dir, f"epoch_{epoch:04d}.pt")
-    torch.save(payload, epoch_path)
+    # Save the latest checkpoint (overwrites the previous latest.pt)
+    latest_path = os.path.join(checkpoint_dir, "latest.pt")
+    torch.save(payload, latest_path)
+
+    # Save periodic checkpoints every 50 epochs to prevent disk bloat
+    if epoch > 0 and epoch % 50 == 0:
+        epoch_path = os.path.join(checkpoint_dir, f"epoch_{epoch:04d}.pt")
+        torch.save(payload, epoch_path)
 
     # Overwrite best.pt if this is a new best
     if is_best:

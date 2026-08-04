@@ -22,15 +22,18 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from api.routes.data     import router as data_router
-from api.routes.training import router as training_router
-from api.routes.inference import router as inference_router
+from api.routes.data      import router as data_router
+from api.routes.training  import router as training_router
+from api.routes.inference  import router as inference_router
+from api.routes.analysis   import router as analysis_router
+from api.routes.report     import router as report_router
+from api.routes.copilot    import router as copilot_router
 from api.schemas import HealthResponse
 
 # ---- Create the FastAPI app --------------------------------
 
 app = FastAPI(
-    title="RRIN — Restorative Retinal Imaging Network API",
+    title="RetinaAI — Retinal Intelligence Platform API",
     description="""
 ## Retinal Fundus Image Restoration API
 
@@ -54,7 +57,22 @@ Visit **/redoc** for the ReDoc alternative documentation.
 )
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Ensure model checkpoint is present or downloaded on boot."""
+    try:
+        from src.utils.download_model import ensure_checkpoint_exists
+        ensure_checkpoint_exists("checkpoints/best.pt")
+    except Exception as e:
+        print(f"Startup model check notice: {e}")
+
+
+
 # ---- CORS (allows browser clients to call the API) --------
+
+@app.get("/meta.json", include_in_schema=False)
+async def get_meta_json():
+    return JSONResponse(content={})
 
 app.add_middleware(
     CORSMiddleware,
@@ -88,9 +106,22 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# ---- Health check endpoint --------------------------------
+# ---- Web UI & Health Check endpoints -----------------------
 
-@app.get("/", response_model=HealthResponse, tags=["Health"])
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse, tags=["UI"])
+async def serve_ui():
+    """
+    Serve the interactive Web UI page for the retinal image restoration.
+    """
+    ui_path = os.path.join(os.path.dirname(__file__), "index.html")
+    if os.path.exists(ui_path):
+        with open(ui_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse(content="<h1>RRIN Web UI HTML file not found</h1>", status_code=404)
+
+
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """
@@ -116,6 +147,9 @@ async def health_check():
 app.include_router(data_router,      prefix="/api/v1")
 app.include_router(training_router,  prefix="/api/v1")
 app.include_router(inference_router, prefix="/api/v1")
+app.include_router(analysis_router,  prefix="/api/v1")
+app.include_router(report_router,    prefix="/api/v1")
+app.include_router(copilot_router,   prefix="/api/v1")
 
 
 # ---- Run directly (python api/app.py) ----------------------

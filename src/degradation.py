@@ -22,16 +22,10 @@ import cv2
 import numpy as np
 from typing import Optional
 
-try:
-    from noise import pnoise2   # Perlin noise library
-    _HAS_NOISE_LIB = True
-except ImportError:
-    _HAS_NOISE_LIB = False
-
 from src.utils.image_utils import rescale_array_to_range
 
 
-# ---- Perlin illumination field ----------------------------
+# ---- Vectorised Multi-Scale Illumination field ----------------------------
 
 def generate_perlin_illumination_field(
     height: int,
@@ -43,35 +37,37 @@ def generate_perlin_illumination_field(
     Generate a smooth, spatially-varying multiplicative gain field that
     simulates vignetting and uneven flash illumination.
 
+    Uses a highly efficient vectorised multi-scale grid upsampling approach
+    instead of the deprecated and crash-prone C 'noise' library. This avoids
+    slow python loops and prevents segmentation faults on newer Python runtimes.
+
     params:
         height, width   — output array dimensions
-        octaves_range   — (min, max) number of Perlin noise octaves to use
+        octaves_range   — (min, max) number of noise octaves/scales to use
         gain_range      — (min_gain, max_gain) range the field is rescaled to
     returns: illumination_field — (H, W) float32 array, values in gain_range
     side effects: none
-
-    If the `noise` library is unavailable, falls back to a simple Gaussian field.
     """
-    if _HAS_NOISE_LIB:
-        octave_count = random.randint(*octaves_range)
-        seed         = random.randint(0, 1_000_000)
-        raw_field    = np.array(
-            [[pnoise2(y / height, x / width,
-                      octaves=octave_count,
-                      persistence=0.5,
-                      lacunarity=2.0,
-                      base=seed)
-              for x in range(width)]
-             for y in range(height)],
-            dtype=np.float32,
-        )
-    else:
-        # Fallback: large Gaussian blur of random noise ≈ low-frequency field
-        raw_field = np.random.randn(height, width).astype(np.float32)
-        sigma = random.uniform(height * 0.1, height * 0.4)
-        raw_field = cv2.GaussianBlur(raw_field, (0, 0), sigma)
+    # Create a base noise field at multiple scales (octaves)
+    # We combine multiple scales of upsampled random grids to get fractal-like noise.
+    field = np.zeros((height, width), dtype=np.float32)
+    octave_count = random.randint(*octaves_range)
 
-    return rescale_array_to_range(raw_field, gain_range[0], gain_range[1]).astype(np.float32)
+    # Define resolutions for each octave (e.g. 2x2, 4x4, 8x8, 16x16)
+    # This matches the frequency doubling of typical Perlin noise.
+    resolutions = [2**i for i in range(1, 1 + octave_count)]
+
+    # We assign decreasing weights to higher frequency octaves (persistence)
+    weights = [0.5**i for i in range(octave_count)]
+
+    for res, weight in zip(resolutions, weights):
+        # Generate a small grid of random values
+        low_res = np.random.uniform(-1.0, 1.0, (res, res)).astype(np.float32)
+        # Upsample using bicubic interpolation to create smooth gradient noise
+        upsampled = cv2.resize(low_res, (width, height), interpolation=cv2.INTER_CUBIC)
+        field += upsampled * weight
+
+    return rescale_array_to_range(field, gain_range[0], gain_range[1]).astype(np.float32)
 
 
 # ---- Specular reflection helpers --------------------------
@@ -324,6 +320,32 @@ def apply_jpeg_recompression_artifact(
     return decoded_rgb.astype(np.float32) / 255.0
 
 
+def apply_contrast_and_gamma_distortion(
+    image_rgb: np.ndarray,
+    contrast_range: tuple = (0.55, 1.2),
+    gamma_range: tuple = (0.7, 1.5),
+) -> np.ndarray:
+    """
+    Simulate under/over-exposed images and low-contrast camera settings
+    by applying random contrast scaling and non-linear gamma curves.
+
+    params:
+        image_rgb      — (H, W, 3) float32 in [0, 1]
+        contrast_range — (min, max) contrast factor
+        gamma_range    — (min, max) exponent for gamma correction
+    returns: degraded image with adjusted contrast and gamma
+    """
+    contrast = random.uniform(*contrast_range)
+    gamma = random.uniform(*gamma_range)
+
+    mean = np.mean(image_rgb, axis=(0, 1), keepdims=True)
+    img_adj = (image_rgb - mean) * contrast + mean
+    img_adj = np.clip(img_adj, 0.0, 1.0)
+
+    img_gamma = np.power(img_adj, gamma)
+    return np.clip(img_gamma, 0.0, 1.0).astype(np.float32)
+
+
 # ---- Compose pipeline -------------------------------------
 
 def compose_random_degradation_pipeline(
@@ -354,13 +376,13 @@ def compose_random_degradation_pipeline(
     working_image = np.clip(working_image, 0.0, 1.0)
 
     # Step 2: Randomly shuffle and apply a subset of the remaining operators
-    # Note: simulate_specular_reflections needs fov_mask as an argument
     operator_pool = [
         lambda img: simulate_specular_reflections(img, fov_mask),
         simulate_haze_overlay,
         apply_defocus_or_motion_blur,
         add_poisson_gaussian_sensor_noise,
         apply_jpeg_recompression_artifact,
+        apply_contrast_and_gamma_distortion,
     ]
 
     random.shuffle(operator_pool)
@@ -371,3 +393,4 @@ def compose_random_degradation_pipeline(
         working_image = op(working_image)
 
     return np.clip(working_image, 0.0, 1.0).astype(np.float32)
+

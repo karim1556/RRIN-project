@@ -78,7 +78,7 @@ def _run_training_thread(request: TrainingRequest):
     from src.models.losses import VGGPerceptualLoss, SSIMLoss
     from src.training.train import train_one_epoch, validate_one_epoch
     from src.training.checkpoints import save_checkpoint, load_checkpoint
-    from src.training.checkpoints import EarlyStopping, get_linear_decay_lr_scheduler
+    from src.training.checkpoints import EarlyStopping, get_lr_scheduler
     from src.utils.logging_utils import setup_logger, set_global_random_seeds
 
     try:
@@ -127,9 +127,9 @@ def _run_training_thread(request: TrainingRequest):
             gen_opt  = torch.optim.Adam(generator.parameters(),     lr=request.learning_rate, betas=(ADAM_BETA1, ADAM_BETA2), eps=ADAM_EPSILON, weight_decay=WEIGHT_DECAY)
             disc_opt = torch.optim.Adam(discriminator.parameters(), lr=request.learning_rate, betas=(ADAM_BETA1, ADAM_BETA2), eps=ADAM_EPSILON)
 
-        from src.training.checkpoints import get_linear_decay_lr_scheduler, EarlyStopping
-        gen_sched  = get_linear_decay_lr_scheduler(gen_opt)
-        disc_sched = get_linear_decay_lr_scheduler(disc_opt)
+        from src.training.checkpoints import get_lr_scheduler, EarlyStopping
+        gen_sched  = get_lr_scheduler(gen_opt)
+        disc_sched = get_lr_scheduler(disc_opt)
 
         perc_loss = VGGPerceptualLoss().to(DEVICE)
         ssim_loss = SSIMLoss().to(DEVICE)

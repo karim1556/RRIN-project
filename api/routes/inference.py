@@ -54,33 +54,46 @@ def _get_generator(checkpoint_path: str = "checkpoints/best.pt"):
     return _cached_generator
 
 
-@router.post("/restore", response_class=FileResponse)
+def _array_to_base64_png(arr) -> str:
+    import io
+    import base64
+    from PIL import Image
+    import numpy as np
+    uint8_arr = (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+    img = Image.fromarray(uint8_arr)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _apply_clahe(img_arr, clip_limit: float = 3.0):
+    import cv2
+    import numpy as np
+    uint8_img = (np.clip(img_arr, 0.0, 1.0) * 255).astype(np.uint8)
+    bgr = cv2.cvtColor(uint8_img, cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    enhanced_lab = cv2.merge((cl, a, b))
+    enhanced_bgr = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+    enhanced_rgb = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+    return enhanced_rgb.astype(np.float32) / 255.0
+
+
+@router.post("/restore")
 async def restore_single_image_upload(
     file: UploadFile = File(..., description="Degraded retina image (JPEG, PNG, or TIFF)"),
     checkpoint_path: str = Form(default="checkpoints/best.pt"),
     compute_uncertainty: bool = Form(default=False),
+    return_json: bool = Form(default=False),
+    enhance_contrast: bool = Form(default=True),
 ):
     """
     Upload a degraded retina image and receive the restored version.
 
     This endpoint accepts the image as a file upload (multipart/form-data).
-    The restored image is returned as a PNG file download.
-
-    To use from the command line:
-        curl -X POST http://localhost:8000/api/v1/inference/restore \\
-             -F "file=@my_retina.jpg" \\
-             -F "checkpoint_path=checkpoints/best.pt" \\
-             --output restored.png
-
-    To use from Python:
-        import requests
-        with open("my_retina.jpg", "rb") as f:
-            resp = requests.post(
-                "http://localhost:8000/api/v1/inference/restore",
-                files={"file": f}
-            )
-        with open("restored.png", "wb") as out:
-            out.write(resp.content)
+    The restored image is returned as a PNG file download (or JSON containing base64 data URLs).
     """
     # Check file type
     allowed_extensions = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"}
@@ -115,14 +128,41 @@ async def restore_single_image_upload(
         else:
             restored = restore_image_array(generator, image)
 
+        if enhance_contrast:
+            restored = _apply_clahe(restored)
+
         save_float_array_as_image(restored, tmp_output_path)
         elapsed_ms = (time.time() - start_time) * 1000
 
+        if return_json:
+            # Convert both images to base64 png for browser rendering (especially TIFFs)
+            import numpy as np
+            original_base64 = _array_to_base64_png(image)
+            restored_base64 = _array_to_base64_png(restored)
+            if os.path.exists(tmp_output_path):
+                os.unlink(tmp_output_path)
+            
+            import torch
+            device_str = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            # Return JSON instead of FileResponse
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                content={
+                    "original": original_base64,
+                    "restored": restored_base64,
+                    "latency_ms": elapsed_ms,
+                    "device": device_str
+                }
+            )
+
     except Exception as e:
-        os.unlink(tmp_input_path)
+        if os.path.exists(tmp_input_path):
+            os.unlink(tmp_input_path)
         raise HTTPException(status_code=500, detail=f"Restoration failed: {str(e)}")
     finally:
-        os.unlink(tmp_input_path)
+        if os.path.exists(tmp_input_path):
+            os.unlink(tmp_input_path)
 
     return FileResponse(
         path=tmp_output_path,
