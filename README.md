@@ -2,7 +2,7 @@
 title: RetinaAI — Retinal Intelligence Platform
 emoji: 👁️
 colorFrom: green
-colorTo: teal
+colorTo: blue
 sdk: gradio
 sdk_version: 4.44.0
 app_file: app.py
