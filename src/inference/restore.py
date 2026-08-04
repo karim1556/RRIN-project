@@ -50,20 +50,6 @@ def load_generator_for_inference(
     returns: UNetGenerator ready for inference
     side effects: loads weights into GPU/CPU memory
     """
-    # Check for ONNX checkpoint first (ultra-lightweight <100MB RAM for cloud)
-    onnx_path = os.path.join(os.path.dirname(checkpoint_path) or "checkpoints", "best_inference.onnx")
-    if checkpoint_path.endswith(".onnx") or os.path.exists(onnx_path):
-        target_onnx = checkpoint_path if checkpoint_path.endswith(".onnx") else onnx_path
-        try:
-            import onnxruntime as ort
-            opts = ort.SessionOptions()
-            opts.log_severity_level = 3  # Suppress harmless CPU fallback warnings
-            session = ort.InferenceSession(target_onnx, opts, providers=["CPUExecutionProvider"])
-            print(f"✅ ONNX model loaded successfully from {target_onnx} (ultra-lightweight engine)")
-            return session
-        except Exception as onnx_err:
-            print(f"Notice: Could not load ONNX model ({onnx_err}), falling back to PyTorch")
-
     # Fallback check if default checkpoint_path doesn't exist
     if not os.path.exists(checkpoint_path):
         alt_path = os.path.join(os.path.dirname(checkpoint_path) or "checkpoints", "best_inference.pt")
@@ -114,13 +100,12 @@ def _pad_to_multiple(image: np.ndarray, multiple: int = 32) -> tuple[np.ndarray,
 
 
 def restore_image_array(
-    generator,
+    generator: UNetGenerator,
     image_rgb: np.ndarray,
     max_dim: int = 384,
 ) -> np.ndarray:
     """
-    Restore a single image represented as a float32 numpy array.
-    Supports both PyTorch UNetGenerator and ONNXRuntime InferenceSession.
+    Restore a single image represented as a float32 numpy array using trained GAN generator.
     """
     import gc
     from PIL import Image
@@ -135,19 +120,14 @@ def restore_image_array(
 
     padded, orig_shape = _pad_to_multiple(image_rgb, multiple=32)
     input_tensor = build_four_channel_input_tensor(padded)       # (4, H', W')
-
-    # Handle ONNXRuntime InferenceSession vs PyTorch UNetGenerator
-    if hasattr(generator, "run"):
-        input_arr = input_tensor.numpy()[None, ...]                # (1, 4, H', W')
-        output_arr = generator.run(None, {"input": input_arr})[0][0] # (3, H', W')
-        output_arr = np.transpose(output_arr, (1, 2, 0))            # (H', W', 3)
-        output_arr = np.clip(output_arr, 0.0, 1.0)
-    else:
-        input_tensor_gpu = input_tensor.unsqueeze(0).to(DEVICE)     # (1, 4, H', W')
-        with torch.no_grad():
-            output_tensor = generator(input_tensor_gpu)             # (1, 3, H', W')
-        output_arr = tensor_to_float_array(output_tensor[0])        # (H', W', 3) in [0,1]
-        del input_tensor_gpu, output_tensor
+    input_tensor_gpu = input_tensor.unsqueeze(0).to(DEVICE)     # (1, 4, H', W')
+    
+    with torch.no_grad():
+        output_tensor = generator(input_tensor_gpu)             # (1, 3, H', W')
+    output_arr = tensor_to_float_array(output_tensor[0])        # (H', W', 3) in [0,1]
+    
+    del input_tensor_gpu, output_tensor
+    gc.collect()
     gc.collect()
 
     # Crop back to shape
