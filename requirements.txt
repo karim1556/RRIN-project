@@ -18,8 +18,9 @@ python-multipart>=0.0.6
 pydantic>=2.0.0
 aiofiles>=23.0.0
 kaggle>=1.5.16
-huggingface-hub>=0.19.0
+huggingface-hub>=0.19.0,<0.24.0
 onnx>=1.15.0
 onnxruntime>=1.16.0
-gradio>=4.0.0
+gradio>=4.44.0
+
 
