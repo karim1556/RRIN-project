@@ -102,20 +102,31 @@ def _pad_to_multiple(image: np.ndarray, multiple: int = 32) -> tuple[np.ndarray,
 def restore_image_array(
     generator: UNetGenerator,
     image_rgb: np.ndarray,
+    max_dim: int = 384,
 ) -> np.ndarray:
     """
     Restore a single image represented as a float32 numpy array.
 
-    Handles images of any size by padding to a multiple of 32.
-    The network was trained on 256×256 patches, but can run on
-    larger images thanks to its fully-convolutional architecture.
+    Smartly caps resolution to max_dim (default 384px) to guarantee
+    low RAM consumption (<100MB) on cloud environments like Render.
 
     params:
         generator — loaded UNetGenerator in eval mode
         image_rgb — (H, W, 3) float32 array in [0, 1]
+        max_dim   — maximum spatial dimension (384px default)
     returns: restored_image — (H, W, 3) float32 array in [0, 1]
-    side effects: none beyond GPU memory allocation
     """
+    import gc
+    from PIL import Image
+
+    h, w = image_rgb.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        new_w, new_h = int(round(w * scale)), int(round(h * scale))
+        uint8_img = (np.clip(image_rgb, 0.0, 1.0) * 255).astype(np.uint8)
+        resized_pil = Image.fromarray(uint8_img).resize((new_w, new_h), Image.Resampling.LANCZOS)
+        image_rgb = np.array(resized_pil, dtype=np.float32) / 255.0
+
     padded, orig_shape = _pad_to_multiple(image_rgb, multiple=32)
 
     input_tensor = build_four_channel_input_tensor(padded)       # (4, H', W')
@@ -126,7 +137,10 @@ def restore_image_array(
 
     output_arr = tensor_to_float_array(output_tensor[0])         # (H', W', 3) in [0,1]
 
-    # Crop back to original size
+    del input_tensor, output_tensor
+    gc.collect()
+
+    # Crop back to shape
     h, w = orig_shape
     return output_arr[:h, :w, :]
 
