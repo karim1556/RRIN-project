@@ -15,9 +15,9 @@ DEFAULT_MODEL_URL = os.environ.get(
     "https://huggingface.co/Karim9111556/retinaai-weights/resolve/main/best_inference.pt"
 )
 
-def ensure_checkpoint_exists(target_path: str = "checkpoints/best_inference.pt") -> str:
+def ensure_checkpoint_exists(target_path: str = "checkpoints/best.pt") -> str:
     """
-    Check if a checkpoint exists locally. If not, check for best_inference.pt.
+    Check if a checkpoint exists locally. Checks for best.pt first, then best_inference.pt.
     If neither exists, attempt to download best_inference.pt from DEFAULT_MODEL_URL or MODEL_URL.
 
     returns: path to existing or downloaded checkpoint file
@@ -26,6 +26,10 @@ def ensure_checkpoint_exists(target_path: str = "checkpoints/best_inference.pt")
         return target_path
 
     checkpoint_dir = os.path.dirname(target_path) or "checkpoints"
+    best_pt = os.path.join(checkpoint_dir, "best.pt")
+    if os.path.exists(best_pt):
+        return best_pt
+
     pt_path = os.path.join(checkpoint_dir, "best_inference.pt")
     if os.path.exists(pt_path):
         return pt_path

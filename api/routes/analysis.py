@@ -313,7 +313,7 @@ async def progression(
 @router.post("/full-pipeline")
 async def full_pipeline(
     file: UploadFile = File(..., description="Retinal fundus image"),
-    checkpoint_path: str = Form(default="checkpoints/best_inference.pt"),
+    checkpoint_path: str = Form(default="checkpoints/best.pt"),
     enhance_veins: bool = Form(default=True),
     patient_id: str = Form(default="N/A"),
     patient_age: Optional[int] = Form(default=None),
